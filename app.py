@@ -1,204 +1,105 @@
 import streamlit as st
-from ultralytics import YOLO
 import cv2
-import tempfile
-import pandas as pd
-from PIL import Image
-import numpy as np
+import av
+from ultralytics import YOLO
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
-# --------------------------------------------------
-# PAGE CONFIG
-# --------------------------------------------------
+# Page Configuration
 st.set_page_config(
-    page_title="Smart Road Object Detection",
-    page_icon="🚦",
+    page_title="Road Object Detection",
+    page_icon="🚗",
     layout="wide"
 )
 
-# --------------------------------------------------
-# CUSTOM CSS
-# --------------------------------------------------
-st.markdown("""
-<style>
-.main {
-    background-color: #0E1117;
-}
+st.title("🚗 Real-Time Road Object Detection")
+st.write(
+    "Detect vehicles, pedestrians, traffic lights, and other road objects using YOLOv8."
+)
 
-.stMetric {
-    background-color: #1E1E1E;
-    padding: 10px;
-    border-radius: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# --------------------------------------------------
-# TITLE
-# --------------------------------------------------
-st.title("🚦 Smart Road Object Detection Dashboard")
-st.markdown("Real-Time Road Object Detection using YOLOv8")
-
-# --------------------------------------------------
-# MODEL
-# --------------------------------------------------
+# Load Model Once
 @st.cache_resource
 def load_model():
-    return YOLO("yolov8s.pt")
+    return YOLO("yolov8n.pt")
 
 model = load_model()
 
-# --------------------------------------------------
-# SIDEBAR
-# --------------------------------------------------
-st.sidebar.header("Detection Settings")
+ROAD_CLASSES = [
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "bus",
+    "truck",
+    "traffic light",
+    "stop sign"
+]
 
-confidence = st.sidebar.slider(
-    "Confidence Threshold",
-    0.1,
-    1.0,
-    0.4,
-    0.05
-)
 
-source = st.sidebar.radio(
-    "Select Input Source",
-    ["Image", "Video"]
-)
+class VideoProcessor(VideoProcessorBase):
 
-# --------------------------------------------------
-# IMAGE DETECTION
-# --------------------------------------------------
-if source == "Image":
+    def recv(self, frame):
 
-    uploaded_image = st.file_uploader(
-        "Upload Road Image",
-        type=["jpg", "jpeg", "png"]
-    )
+        img = frame.to_ndarray(format="bgr24")
 
-    if uploaded_image:
-
-        image = Image.open(uploaded_image)
-        image_np = np.array(image)
-
-        results = model(
-            image_np,
-            conf=confidence
+        results = model.predict(
+            source=img,
+            conf=0.4,
+            verbose=False
         )
 
-        annotated = results[0].plot()
+        for result in results:
 
-        names = model.names
+            boxes = result.boxes
 
-        vehicles = 0
-        people = 0
-        bikes = 0
+            for box in boxes:
 
-        if len(results[0].boxes) > 0:
+                cls_id = int(box.cls[0])
+                confidence = float(box.conf[0])
 
-            classes = results[0].boxes.cls.cpu().numpy()
+                class_name = model.names[cls_id]
 
-            for cls in classes:
+                if class_name in ROAD_CLASSES:
 
-                label = names[int(cls)]
+                    x1, y1, x2, y2 = map(
+                        int,
+                        box.xyxy[0]
+                    )
 
-                if label in ["car", "truck", "bus"]:
-                    vehicles += 1
+                    cv2.rectangle(
+                        img,
+                        (x1, y1),
+                        (x2, y2),
+                        (0, 255, 0),
+                        2
+                    )
 
-                elif label == "person":
-                    people += 1
+                    label = (
+                        f"{class_name} "
+                        f"{confidence:.2f}"
+                    )
 
-                elif label in ["motorcycle", "bicycle"]:
-                    bikes += 1
+                    cv2.putText(
+                        img,
+                        label,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2
+                    )
 
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric("🚗 Vehicles", vehicles)
-        col2.metric("🚶 People", people)
-        col3.metric("🏍 Bikes", bikes)
-
-        st.image(
-            annotated,
-            caption="Detected Objects",
-            use_container_width=True
+        return av.VideoFrame.from_ndarray(
+            img,
+            format="bgr24"
         )
 
-# --------------------------------------------------
-# VIDEO DETECTION
-# --------------------------------------------------
-else:
 
-    uploaded_video = st.file_uploader(
-        "Upload Road Video",
-        type=["mp4", "avi", "mov"]
-    )
-
-    if uploaded_video:
-
-        tfile = tempfile.NamedTemporaryFile(delete=False)
-        tfile.write(uploaded_video.read())
-
-        cap = cv2.VideoCapture(tfile.name)
-
-        frame_placeholder = st.empty()
-
-        vehicle_metric = st.empty()
-        people_metric = st.empty()
-        bike_metric = st.empty()
-
-        while cap.isOpened():
-
-            success, frame = cap.read()
-
-            if not success:
-                break
-
-            results = model(
-                frame,
-                conf=confidence,
-                verbose=False
-            )
-
-            annotated = results[0].plot()
-
-            vehicles = 0
-            people = 0
-            bikes = 0
-
-            if len(results[0].boxes) > 0:
-
-                classes = results[0].boxes.cls.cpu().numpy()
-
-                for cls in classes:
-
-                    label = model.names[int(cls)]
-
-                    if label in ["car", "truck", "bus"]:
-                        vehicles += 1
-
-                    elif label == "person":
-                        people += 1
-
-                    elif label in ["motorcycle", "bicycle"]:
-                        bikes += 1
-
-            col1, col2, col3 = st.columns(3)
-
-            col1.metric("🚗 Vehicles", vehicles)
-            col2.metric("🚶 People", people)
-            col3.metric("🏍 Bikes", bikes)
-
-            frame_placeholder.image(
-                annotated,
-                channels="BGR",
-                use_container_width=True
-            )
-
-        cap.release()
-
-# --------------------------------------------------
-# FOOTER
-# --------------------------------------------------
-st.markdown("---")
-st.markdown(
-    "Built with ❤️ using Streamlit, OpenCV and YOLOv8"
+webrtc_streamer(
+    key="road-detection",
+    video_processor_factory=VideoProcessor,
+    media_stream_constraints={
+        "video": True,
+        "audio": False
+    },
+    async_processing=True
 )
